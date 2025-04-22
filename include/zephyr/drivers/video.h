@@ -6,6 +6,7 @@
 
 /*
  * Copyright (c) 2019 Linaro Limited.
+ * Copyright 2025 NXP
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -36,6 +37,8 @@ extern "C" {
  * buffers the size of the video frame
  */
 #define LINE_COUNT_HEIGHT (-1)
+
+struct video_control;
 
 /**
  * @struct video_format
@@ -315,20 +318,13 @@ typedef int (*video_api_flush_t)(const struct device *dev, enum video_endpoint_i
 typedef int (*video_api_set_stream_t)(const struct device *dev, bool enable);
 
 /**
- * @typedef video_api_set_ctrl_t
- * @brief Set a video control value.
+ * @typedef video_api_ctrl_t
+ * @brief Set/Get a video control value.
  *
- * See video_set_ctrl() for argument descriptions.
+ * @param dev Pointer to the device structure.
+ * @param cid Id of the control to set/get its value.
  */
-typedef int (*video_api_set_ctrl_t)(const struct device *dev, unsigned int cid, void *value);
-
-/**
- * @typedef video_api_get_ctrl_t
- * @brief Get a video control value.
- *
- * See video_get_ctrl() for argument descriptions.
- */
-typedef int (*video_api_get_ctrl_t)(const struct device *dev, unsigned int cid, void *value);
+typedef int (*video_api_ctrl_t)(const struct device *dev, uint32_t cid);
 
 /**
  * @typedef video_api_get_caps_t
@@ -358,8 +354,8 @@ __subsystem struct video_driver_api {
 	video_api_enqueue_t enqueue;
 	video_api_dequeue_t dequeue;
 	video_api_flush_t flush;
-	video_api_set_ctrl_t set_ctrl;
-	video_api_get_ctrl_t get_ctrl;
+	video_api_ctrl_t set_ctrl;
+	video_api_ctrl_t get_volatile_ctrl;
 	video_api_set_signal_t set_signal;
 	video_api_set_frmival_t set_frmival;
 	video_api_get_frmival_t get_frmival;
@@ -653,24 +649,14 @@ static inline int video_get_caps(const struct device *dev, enum video_endpoint_i
  * must be interpreted accordingly.
  *
  * @param dev Pointer to the device structure for the driver instance.
- * @param cid Control ID.
- * @param value Pointer to the control value.
+ * @param control Pointer to the video control struct.
  *
  * @retval 0 Is successful.
  * @retval -EINVAL If parameters are invalid.
  * @retval -ENOTSUP If format is not supported.
  * @retval -EIO General input / output error.
  */
-static inline int video_set_ctrl(const struct device *dev, unsigned int cid, void *value)
-{
-	const struct video_driver_api *api = (const struct video_driver_api *)dev->api;
-
-	if (api->set_ctrl == NULL) {
-		return -ENOSYS;
-	}
-
-	return api->set_ctrl(dev, cid, value);
-}
+int video_set_ctrl(const struct device *dev, struct video_control *control);
 
 /**
  * @brief Get the current value of a control.
@@ -678,25 +664,50 @@ static inline int video_set_ctrl(const struct device *dev, unsigned int cid, voi
  * This retrieve the value of a video control, value type depends on control ID,
  * and must be interpreted accordingly.
  *
- * @param dev Pointer to the device structure for the driver instance.
- * @param cid Control ID.
- * @param value Pointer to the control value.
+ * @param dev Pointer to the device structure.
+ * @param control Pointer to the video control struct.
  *
  * @retval 0 Is successful.
  * @retval -EINVAL If parameters are invalid.
  * @retval -ENOTSUP If format is not supported.
  * @retval -EIO General input / output error.
  */
-static inline int video_get_ctrl(const struct device *dev, unsigned int cid, void *value)
-{
-	const struct video_driver_api *api = (const struct video_driver_api *)dev->api;
+int video_get_ctrl(const struct device *dev, struct video_control *control);
 
-	if (api->get_ctrl == NULL) {
-		return -ENOSYS;
-	}
+struct video_ctrl_query;
 
-	return api->get_ctrl(dev, cid, value);
-}
+/**
+ * @brief Query information about a control.
+ *
+ * Applications set the id field of the query structure, the function fills the rest of this
+ * structure. It is possible to enumerate base class controls (i.e., VIDEO_CID_BASE + x) by calling
+ * this function with successive id values starting from VIDEO_CID_BASE up to and exclusive
+ * VIDEO_CID_LASTP1. The function may return -ENOTSUP if a control in this range is not supported.
+ * Applications can also enumerate private controls by starting at VIDEO_CID_PRIVATE_BASE and
+ * incrementing the id until the driver returns -ENOTSUP. For other control classes, it's a bit more
+ * difficult. Hence, the best way to enumerate all kinds of device's supported controls is to
+ * iterate with VIDEO_CTRL_FLAG_NEXT_CTRL.
+ *
+ * @param dev Pointer to the device structure.
+ * @param cq Pointer to the control query struct.
+ *
+ * @retval 0 If successful.
+ * @retval -EINVAL If the control id is invalid.
+ * @retval -ENOTSUP If the control id is not supported.
+ */
+int video_query_ctrl(const struct device *dev, struct video_ctrl_query *cq);
+
+/**
+ * @brief Print all the information of a control.
+ *
+ * Print all the information of a control including its name, type, flag, range,
+ * menu (if any) and current value, i.e. by invoking the video_get_ctrl(), in a
+ * human readble format.
+ *
+ * @param dev Pointer to the device structure.
+ * @param cq Pointer to the control query struct.
+ */
+void video_print_ctrl(const struct device *const dev, const struct video_ctrl_query *const cq);
 
 /**
  * @brief Register/Unregister k_poll signal for a video endpoint.
@@ -810,7 +821,7 @@ void video_closest_frmival(const struct device *dev, enum video_endpoint_id ep,
 
 /**
  * @defgroup video_pixel_formats Video pixel formats
- * The @c | characters separate the pixels, and spaces separate the bytes.
+ * The '|' characters separate the pixels or logical blocks, and spaces separate the bytes.
  * The uppercase letter represents the most significant bit.
  * The lowercase letters represent the rest of the bits.
  * @{
@@ -856,40 +867,211 @@ void video_closest_frmival(const struct device *dev, enum video_endpoint_id ep,
  *
  * The full color information is spread over multiple pixels.
  *
+ * When the format includes more than 8-bit per pixel, a strategy becomes needed to pack
+ * the bits over multiple bytes, as illustrated for each format.
+ *
+ * The number above the 'R', 'r', 'G', 'g', 'B', 'b' are hints about which pixel number the
+ * following bits belong to.
+ *
  * @{
  */
 
 /**
- * @verbatim
- * | Bbbbbbbb | Gggggggg | Bbbbbbbb | Gggggggg | Bbbbbbbb | Gggggggg | ...
- * | Gggggggg | Rrrrrrrr | Gggggggg | Rrrrrrrr | Gggggggg | Rrrrrrrr | ...
- * @endverbatim
+ * @code{.unparsed}
+ *   0          1          2          3
+ * | Bbbbbbbb | Gggggggg | Bbbbbbbb | Gggggggg | ...
+ * | Gggggggg | Rrrrrrrr | Gggggggg | Rrrrrrrr | ...
+ * @endcode
  */
 #define VIDEO_PIX_FMT_BGGR8 VIDEO_FOURCC('B', 'A', '8', '1')
 
 /**
- * @verbatim
- * | Gggggggg | Bbbbbbbb | Gggggggg | Bbbbbbbb | Gggggggg | Bbbbbbbb | ...
- * | Rrrrrrrr | Gggggggg | Rrrrrrrr | Gggggggg | Rrrrrrrr | Gggggggg | ...
- * @endverbatim
+ * @code{.unparsed}
+ *   0          1          2          3
+ * | Gggggggg | Bbbbbbbb | Gggggggg | Bbbbbbbb | ...
+ * | Rrrrrrrr | Gggggggg | Rrrrrrrr | Gggggggg | ...
+ * @endcode
  */
 #define VIDEO_PIX_FMT_GBRG8 VIDEO_FOURCC('G', 'B', 'R', 'G')
 
 /**
- * @verbatim
- * | Gggggggg | Rrrrrrrr | Gggggggg | Rrrrrrrr | Gggggggg | Rrrrrrrr | ...
- * | Bbbbbbbb | Gggggggg | Bbbbbbbb | Gggggggg | Bbbbbbbb | Gggggggg | ...
- * @endverbatim
+ * @code{.unparsed}
+ *   0          1          2          3
+ * | Gggggggg | Rrrrrrrr | Gggggggg | Rrrrrrrr | ...
+ * | Bbbbbbbb | Gggggggg | Bbbbbbbb | Gggggggg | ...
+ * @endcode
  */
 #define VIDEO_PIX_FMT_GRBG8 VIDEO_FOURCC('G', 'R', 'B', 'G')
 
 /**
- * @verbatim
- * | Rrrrrrrr | Gggggggg | Rrrrrrrr | Gggggggg | Rrrrrrrr | Gggggggg | ...
- * | Gggggggg | Bbbbbbbb | Gggggggg | Bbbbbbbb | Gggggggg | Bbbbbbbb | ...
- * @endverbatim
+ * @code{.unparsed}
+ *   0          1          2          3
+ * | Rrrrrrrr | Gggggggg | Rrrrrrrr | Gggggggg | ...
+ * | Gggggggg | Bbbbbbbb | Gggggggg | Bbbbbbbb | ...
+ * @endcode
  */
 #define VIDEO_PIX_FMT_RGGB8 VIDEO_FOURCC('R', 'G', 'G', 'B')
+
+/**
+ * @code{.unparsed}
+ *   0          1          2          3          3 2 1 0
+ * | Bbbbbbbb | Gggggggg | Bbbbbbbb | Gggggggg | ggbbggbb | ...
+ * | Gggggggg | Rrrrrrrr | Gggggggg | Rrrrrrrr | rrggrrgg | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_SBGGR10P VIDEO_FOURCC('p', 'B', 'A', 'A')
+
+/**
+ * @code{.unparsed}
+ *   0          1          2          3          3 2 1 0
+ * | Gggggggg | Bbbbbbbb | Gggggggg | Bbbbbbbb | bbggbbgg | ...
+ * | Rrrrrrrr | Gggggggg | Rrrrrrrr | Gggggggg | ggrrggrr | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_SGBRG10P VIDEO_FOURCC('p', 'G', 'A', 'A')
+
+/**
+ * @code{.unparsed}
+ *   0          1          2          3          3 2 1 0
+ * | Gggggggg | Rrrrrrrr | Gggggggg | Rrrrrrrr | rrggrrgg | ...
+ * | Bbbbbbbb | Gggggggg | Bbbbbbbb | Gggggggg | ggbbggbb | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_SGRBG10P VIDEO_FOURCC('p', 'g', 'A', 'A')
+
+/**
+ * @code{.unparsed}
+ *   0          1          2          3          3 2 1 0
+ * | Rrrrrrrr | Gggggggg | Rrrrrrrr | Gggggggg | ggrrggrr | ...
+ * | Gggggggg | Bbbbbbbb | Gggggggg | Bbbbbbbb | bbggbbgg | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_SRGGB10P VIDEO_FOURCC('p', 'R', 'A', 'A')
+
+/**
+ * @code{.unparsed}
+ *   0          1          1   0      2          3          3   2
+ * | Bbbbbbbb | Gggggggg | ggggbbbb | Bbbbbbbb | Gggggggg | ggggbbbb | ...
+ * | Gggggggg | Rrrrrrrr | rrrrgggg | Gggggggg | Rrrrrrrr | rrrrgggg | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_SBGGR12P VIDEO_FOURCC('p', 'B', 'C', 'C')
+
+/**
+ * @code{.unparsed}
+ *   0          1          1   0      2          3          3   2
+ * | Gggggggg | Bbbbbbbb | bbbbgggg | Gggggggg | Bbbbbbbb | bbbbgggg | ...
+ * | Rrrrrrrr | Gggggggg | ggggrrrr | Rrrrrrrr | Gggggggg | ggggrrrr | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_SGBRG12P VIDEO_FOURCC('p', 'G', 'C', 'C')
+
+/**
+ * @code{.unparsed}
+ *   0          1          1   0      2          3          3   2
+ * | Gggggggg | Rrrrrrrr | rrrrgggg | Gggggggg | Rrrrrrrr | rrrrgggg | ...
+ * | Bbbbbbbb | Gggggggg | ggggbbbb | Bbbbbbbb | Gggggggg | ggggbbbb | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_SGRBG12P VIDEO_FOURCC('p', 'g', 'C', 'C')
+
+/**
+ * @code{.unparsed}
+ *   0          1          1   0      2          3          3   2
+ * | Rrrrrrrr | Gggggggg | ggggrrrr | Rrrrrrrr | Gggggggg | ggggrrrr | ...
+ * | Gggggggg | Bbbbbbbb | bbbbgggg | Gggggggg | Bbbbbbbb | bbbbgggg | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_SRGGB12P VIDEO_FOURCC('p', 'R', 'C', 'C')
+
+/**
+ * @code{.unparsed}
+ *   0          1          2          3          1 0      2   1    3     2
+ * | Bbbbbbbb | Gggggggg | Bbbbbbbb | Gggggggg | ggbbbbbb bbbbgggg ggggggbb | ...
+ * | Gggggggg | Rrrrrrrr | Gggggggg | Rrrrrrrr | rrgggggg ggggrrrr rrrrrrgg | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_SBGGR14P VIDEO_FOURCC('p', 'B', 'E', 'E')
+
+/**
+ * @code{.unparsed}
+ *   0          1          2          3          1 0      2   1    3     2
+ * | Gggggggg | Bbbbbbbb | Gggggggg | Bbbbbbbb | bbgggggg ggggbbbb bbbbbbgg | ...
+ * | Rrrrrrrr | Gggggggg | Rrrrrrrr | Gggggggg | ggrrrrrr rrrrgggg ggggggrr | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_SGBRG14P VIDEO_FOURCC('p', 'G', 'E', 'E')
+
+/**
+ * @code{.unparsed}
+ *   0          1          2          3          1 0      2   1    3     2
+ * | Gggggggg | Rrrrrrrr | Gggggggg | Rrrrrrrr | rrgggggg ggggrrrr rrrrrrgg | ...
+ * | Bbbbbbbb | Gggggggg | Bbbbbbbb | Gggggggg | ggbbbbbb bbbbgggg ggggggbb | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_SGRBG14P VIDEO_FOURCC('p', 'g', 'E', 'E')
+
+/**
+ * @code{.unparsed}
+ *   0          1          2          3          1 0      2   1    3     2
+ * | Rrrrrrrr | Gggggggg | Rrrrrrrr | Gggggggg | ggrrrrrr rrrrgggg ggggggrr | ...
+ * | Gggggggg | Bbbbbbbb | Gggggggg | Bbbbbbbb | bbgggggg ggggbbbb bbbbbbgg | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_SRGGB14P VIDEO_FOURCC('p', 'R', 'E', 'E')
+
+/**
+ * @}
+ */
+
+/**
+ * @name Grayscale formats
+ * Luminance (Y) channel only, in various bit depth and packing.
+ *
+ * When the format includes more than 8-bit per pixel, a strategy becomes needed to pack
+ * the bits over multiple bytes, as illustrated for each format.
+ *
+ * The number above the 'Y', 'y' are hints about which pixel number the following bits belong to.
+ *
+ * @{
+ */
+
+/**
+ * Same as Y8 (8-bit luma-only) following the standard FOURCC naming,
+ * or L8 in some graphics libraries.
+ *
+ * @code{.unparsed}
+ *   0          1          2          3
+ * | Yyyyyyyy | Yyyyyyyy | Yyyyyyyy | Yyyyyyyy | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_GREY VIDEO_FOURCC('G', 'R', 'E', 'Y')
+
+/**
+ * @code{.unparsed}
+ *   0          1          2          3          3 2 1 0
+ * | Yyyyyyyy | Yyyyyyyy | Yyyyyyyy | Yyyyyyyy | yyyyyyyy | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_Y10P VIDEO_FOURCC('Y', '1', '0', 'P')
+
+/**
+ * @code{.unparsed}
+ *   0          1          1   0      2          3          3   2
+ * | Yyyyyyyy | Yyyyyyyy | yyyyyyyy | Yyyyyyyy | Yyyyyyyy | yyyyyyyy | ...
+ * | Yyyyyyyy | Yyyyyyyy | yyyyyyyy | Yyyyyyyy | Yyyyyyyy | yyyyyyyy | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_Y12P VIDEO_FOURCC('Y', '1', '2', 'P')
+
+/**
+ * @code{.unparsed}
+ *   0          1          2          3          1 0      2   1    3     2
+ * | Yyyyyyyy | Yyyyyyyy | Yyyyyyyy | Yyyyyyyy | yyyyyyyy yyyyyyyy yyyyyyyy | ...
+ * | Yyyyyyyy | Yyyyyyyy | Yyyyyyyy | Yyyyyyyy | yyyyyyyy yyyyyyyy yyyyyyyy | ...
+ * @endcode
+ */
+#define VIDEO_PIX_FMT_Y14P VIDEO_FOURCC('Y', '1', '4', 'P')
 
 /**
  * @}
@@ -905,10 +1087,10 @@ void video_closest_frmival(const struct device *dev, enum video_endpoint_id ep,
  * 5 red bits [15:11], 6 green bits [10:5], 5 blue bits [4:0].
  * This 16-bit integer is then packed in big endian format over two bytes:
  *
- * @verbatim
+ * @code{.unparsed}
  *   15.....8 7......0
  * | RrrrrGgg gggBbbbb | ...
- * @endverbatim
+ * @endcode
  */
 #define VIDEO_PIX_FMT_RGB565X VIDEO_FOURCC('R', 'G', 'B', 'R')
 
@@ -916,19 +1098,19 @@ void video_closest_frmival(const struct device *dev, enum video_endpoint_id ep,
  * 5 red bits [15:11], 6 green bits [10:5], 5 blue bits [4:0].
  * This 16-bit integer is then packed in little endian format over two bytes:
  *
- * @verbatim
+ * @code{.unparsed}
  *   7......0 15.....8
  * | gggBbbbb RrrrrGgg | ...
- * @endverbatim
+ * @endcode
  */
 #define VIDEO_PIX_FMT_RGB565 VIDEO_FOURCC('R', 'G', 'B', 'P')
 
 /**
  * The first byte is empty (X) for each pixel.
  *
- * @verbatim
+ * @code{.unparsed}
  * | Xxxxxxxx Rrrrrrrr Gggggggg Bbbbbbbb | ...
- * @endverbatim
+ * @endcode
  */
 #define VIDEO_PIX_FMT_XRGB32 VIDEO_FOURCC('B', 'X', '2', '4')
 
@@ -946,18 +1128,18 @@ void video_closest_frmival(const struct device *dev, enum video_endpoint_id ep,
  * There is either a missing channel per pixel, U or V.
  * The value is to be averaged over 2 pixels to get the value of individual pixel.
  *
- * @verbatim
+ * @code{.unparsed}
  * | Yyyyyyyy Uuuuuuuu | Yyyyyyyy Vvvvvvvv | ...
- * @endverbatim
+ * @endcode
  */
 #define VIDEO_PIX_FMT_YUYV VIDEO_FOURCC('Y', 'U', 'Y', 'V')
 
 /**
  * The first byte is empty (X) for each pixel.
  *
- * @verbatim
+ * @code{.unparsed}
  * | Xxxxxxxx Yyyyyyyy Uuuuuuuu Vvvvvvvv | ...
- * @endverbatim
+ * @endcode
  */
 #define VIDEO_PIX_FMT_XYUV32 VIDEO_FOURCC('X', 'Y', 'U', 'V')
 
@@ -994,7 +1176,26 @@ static inline unsigned int video_bits_per_pixel(uint32_t pixfmt)
 	case VIDEO_PIX_FMT_GBRG8:
 	case VIDEO_PIX_FMT_GRBG8:
 	case VIDEO_PIX_FMT_RGGB8:
+	case VIDEO_PIX_FMT_GREY:
 		return 8;
+	case VIDEO_PIX_FMT_SBGGR10P:
+	case VIDEO_PIX_FMT_SGBRG10P:
+	case VIDEO_PIX_FMT_SGRBG10P:
+	case VIDEO_PIX_FMT_SRGGB10P:
+	case VIDEO_PIX_FMT_Y10P:
+		return 10;
+	case VIDEO_PIX_FMT_SBGGR12P:
+	case VIDEO_PIX_FMT_SGBRG12P:
+	case VIDEO_PIX_FMT_SGRBG12P:
+	case VIDEO_PIX_FMT_SRGGB12P:
+	case VIDEO_PIX_FMT_Y12P:
+		return 12;
+	case VIDEO_PIX_FMT_SBGGR14P:
+	case VIDEO_PIX_FMT_SGBRG14P:
+	case VIDEO_PIX_FMT_SGRBG14P:
+	case VIDEO_PIX_FMT_SRGGB14P:
+	case VIDEO_PIX_FMT_Y14P:
+		return 14;
 	case VIDEO_PIX_FMT_RGB565:
 	case VIDEO_PIX_FMT_YUYV:
 		return 16;
