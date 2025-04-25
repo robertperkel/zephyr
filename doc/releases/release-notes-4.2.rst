@@ -99,8 +99,18 @@ Deprecated APIs and options
 * ``xiao_esp32c6`` board target has been deprecated and renamed to
   ``xiao_esp32c6/esp32c6/hpcore``.
 
+* :kconfig:option:`CONFIG_HAWKBIT_DDI_NO_SECURITY` Kconfig option has been
+  deprecated, because support for anonymous authentication had been removed from the
+  hawkBit server in version 0.8.0.
+
 New APIs and options
 ====================
+
+* Architectures
+
+  * :kconfig:option:`ARCH_HAS_VECTOR_TABLE_RELOCATION`
+  * :kconfig:option:`CONFIG_SRAM_VECTOR_TABLE` moved from ``zephyr/Kconfig.zephyr`` to
+    ``zephyr/arch/Kconfig`` and added dependencies to it.
 
 * Kernel
 
@@ -163,6 +173,10 @@ New APIs and options
 
     * :kconfig:option:`CONFIG_NET_SOCKETS_INET_RAW`
 
+  * OpenThread
+
+    * Moved OpenThread-related Kconfig options from ``subsys/net/l2/openthread/Kconfig`` to ``modules/openthread/Kconfig``.
+
 * Sensor
 
   * :c:func:`sensor_value_to_deci`
@@ -193,6 +207,10 @@ New APIs and options
   * :c:func:`video_api_ctrl_t`
   * :c:func:`video_query_ctrl`
   * :c:func:`video_print_ctrl`
+
+* PCIe
+
+   * :kconfig:option:`CONFIG_NVME_PRP_PAGE_SIZE`
 
 New Boards
 **********

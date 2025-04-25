@@ -161,8 +161,13 @@ manifest:
       path: modules/hal/atmel
       groups:
         - hal
+    - name: hal_bouffalolab
+      path: modules/hal/bouffalolab
+      revision: c6c44b879503d990dfba643c212b606cee414faa
+      groups:
+        - hal
     - name: hal_espressif
-      revision: dbc28ad4c1bdcdb25e79ca225cb5528a75d8dc91
+      revision: c811e7e58ecb2574a4ae6a1c777015185cdaf199
       path: modules/hal/espressif
       west-commands: west/west-commands.yml
       groups:
@@ -238,7 +243,7 @@ manifest:
       groups:
         - hal
     - name: hal_stm32
-      revision: f467d8e039216b4f5f9b55dd8a1ffa8582fc516d
+      revision: c17bcab857dbf2ec3100b2d0c3123957fcd42e78
       path: modules/hal/stm32
       groups:
         - hal
@@ -274,7 +279,7 @@ manifest:
         - hal
     - name: hostap
       path: modules/lib/hostap
-      revision: fb6452c246b441434172235b2070259945ca9d44
+      revision: 8412f4b23b6267ee6035d25515a23aaf243f6ad7
     - name: liblc3
       revision: 48bbd3eacd36e99a57317a0a4867002e0b09e183
       path: modules/lib/liblc3
@@ -303,7 +308,7 @@ manifest:
       groups:
         - crypto
     - name: mcuboot
-      revision: 20f98e0a975c24864872e0df5701eb1082e9c957
+      revision: 81315483fcbdf1f1524c2b34a1fd4de6c77cd0f4
       path: bootloader/mcuboot
       groups:
         - bootloader
@@ -321,7 +326,7 @@ manifest:
       revision: d5b95fdd0260e8189e788d40d2863d1e2d4be159
       path: modules/bsim_hw_models/nrf_hw_models
     - name: nrf_wifi
-      revision: eeceee739252cf2d56a5ad9356553d87aae8c57d
+      revision: d89b42a5a301d20f0083b3450789bab294e3f2c4
       path: modules/lib/nrf_wifi
     - name: open-amp
       revision: f7f4d083c7909a39d86e217376c69b416ec4faf3
